@@ -1,0 +1,199 @@
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <conio.h>
+#include <time.h>
+#include <math.h>
+#include <iostream>
+#include <omp.h>
+using namespace std;
+int* pPivotPos; // The number of pivot rows selected at the iterations
+int* pPivotIter; // The iterations, at which the rows were pivots
+typedef struct {
+	int PivotRow;
+	double MaxValue;
+} TThreadPivotRow;
+// Finding the pivot row
+int ParallelFindPivotRow(double* pMatrix, int Size, int Iter) {
+	int PivotRow = -1; // The index of the pivot row
+	double MaxValue = 0; // The value of the pivot element
+	int i; // Loop variable
+	// Choose the row, that stores the maximum element
+#pragma omp parallel
+	{
+		TThreadPivotRow ThreadPivotRow;
+		ThreadPivotRow.MaxValue = 0;
+		ThreadPivotRow.PivotRow = -1;
+#pragma omp for
+		for (i = 0; i < Size; i++) {
+			if ((pPivotIter[i] == -1) &&
+				(fabs(pMatrix[i * Size + Iter]) > ThreadPivotRow.MaxValue))
+			{
+				ThreadPivotRow.PivotRow = i;
+				ThreadPivotRow.MaxValue = fabs(pMatrix[i * Size + Iter]);
+			}
+		}
+#pragma omp critical
+		{
+			if (ThreadPivotRow.MaxValue > MaxValue) {
+				MaxValue = ThreadPivotRow.MaxValue;
+				PivotRow = ThreadPivotRow.PivotRow;
+			}
+		}
+	}
+	return PivotRow;
+}
+// Column elimination
+void ParallelColumnElimination(double* pMatrix, double* pVector,
+	int Pivot, int Iter, int Size) {
+	double PivotValue, PivotFactor;
+	PivotValue = pMatrix[Pivot * Size + Iter];
+#pragma omp parallel for private(PivotFactor) schedule(dynamic,1)
+	for (int i = 0; i < Size; i++) {
+		if (pPivotIter[i] == -1) {
+			PivotFactor = pMatrix[i * Size + Iter] / PivotValue;
+			for (int j = Iter; j < Size; j++) {
+				pMatrix[i * Size + j] -= PivotFactor * pMatrix[Pivot * Size + j];
+			}
+			pVector[i] -= PivotFactor * pVector[Pivot];
+		}
+	}
+}
+// Gaussian elimination
+void ParallelGaussianElimination(double* pMatrix, double* pVector,
+	int Size) {
+	int Iter; // The number of the iteration of the Gaussian
+	// elimination
+	int PivotRow; // The number of the current pivot row
+	for (Iter = 0; Iter < Size; Iter++) {
+		// Finding the pivot row
+		PivotRow = ParallelFindPivotRow(pMatrix, Size, Iter);
+		pPivotPos[Iter] = PivotRow;
+		pPivotIter[PivotRow] = Iter;
+		ParallelColumnElimination(pMatrix, pVector, PivotRow, Iter, Size);
+	}
+}
+void DummyDataInitialization(double* pMatrix, double* pVector, int Size) {
+	int i, j;
+	for (i = 0; i < Size; i++) {
+		pVector[i] = i + 1;
+		for (j = 0; j < Size; j++) {
+			if (j == i)
+				pMatrix[i * Size + j] = 1;
+			else
+				pMatrix[i * Size + j] = 0;
+		}
+	}
+}
+// Function for memory allocation and definition of the objects elements
+void ProcessInitialization(double*& pMatrix, double*& pVector, double*& pResult, int& Size)
+{
+	// Setting the size of the matrix and the vector
+	do {
+		printf("\nEnter size of the matrix and the vector: ");
+		scanf_s("%d", &Size);
+		printf("\nChosen size = %d \n", Size);
+		if (Size <= 0)
+			printf("\nSize of objects must be greater than 0!\n");
+	} while (Size <= 0);
+	// Memory allocation
+	pMatrix = new double[Size * Size];
+	pVector = new double[Size];
+	pResult = new double[Size];
+	// Initialization of the matrix and the vector elements
+	//RandomDataInitialization(pMatrix, pVector, Size);
+	DummyDataInitialization(pMatrix, pVector, Size);
+	//RandomDataInitialization(pMatrix, pVector, Size);
+}
+// Function for computational process termination
+void ProcessTermination(double* pMatrix, double* pVector, double*
+	pResult) {
+	delete[] pMatrix;
+	delete[] pVector;
+	delete[] pResult;
+}
+
+void PrintMatrix(double* pMatrix, int RowCount, int ColCount) {
+	int i, j; // Loop variables
+	for (i = 0; i < RowCount; i++) {
+		for (j = 0; j < ColCount; j++)
+			printf("%7.4f ", pMatrix[i * RowCount + j]);
+		printf("\n");
+	}
+}
+// Function for formatted vector output
+void PrintVector(double* pVector, int Size) {
+	int i;
+	for (i = 0; i < Size; i++)
+		printf("%7.4f ", pVector[i]);
+}
+const double eps = 0.001;
+void Jacobi(double* pMatrix, double* pVector, double* pResult, int Size)
+{
+	double* TempX = new double[Size];
+	double** A = new double* [Size];
+
+	for (int i = 0; i < Size; i++) {
+		A[i] = new double[Size];
+	}
+	int k = 0;
+
+	for (int i = 0; i < Size; i++) {
+
+		for (int j = 0; j < Size; j++) {
+			A[i][j] = pMatrix[k];
+			k++;
+		}
+	}
+	double norm; 
+
+	while (true) {
+#pragma omp parallel for
+		for (int i = 0; i < Size; i++) {
+			TempX[i] = pVector[i];
+#pragma omp parallel for
+			for (int g = 0; g < Size; g++) {
+				if (i != g)
+					TempX[i] -= A[i][g] * pResult[g];
+			}
+			TempX[i] /= A[i][i];
+		}
+		norm = fabs(pResult[0] - TempX[0]);
+#pragma omp parallel for
+		for (int h = 0; h < Size; h++) {
+			if (fabs(pResult[h] - TempX[h]) > norm)
+				norm = fabs(pResult[h] - TempX[h]);
+			pResult[h] = TempX[h];
+		}
+		if (norm <= eps) {
+			break;
+		}
+	}
+	delete[] TempX;
+}
+int main() {
+	double* pMatrix; // The matrix of the linear system
+	double* pVector; // The right parts of the linear system
+	double* pResult; // The result vector
+	int Size; // The size of the matrix and the vectors
+	double start, finish, duration;
+	// Data initialization
+
+	ProcessInitialization(pMatrix, pVector, pResult, Size);
+	//PrintMatrix(pMatrix, Size, Size);
+	//PrintMatrix(pMatrix, Size, Size);
+	//PrintVector(pVector, Size);
+	start = omp_get_wtime();
+	//ParallelResultCalculation(pMatrix, pVector, pResult, Size);
+	Jacobi(pMatrix, pVector, pResult, Size);
+	finish = omp_get_wtime();
+	duration = finish - start;
+	// Testing the result
+	//PrintVector(pVector, Size);
+	//TestResult(pMatrix, pVector, pResult, Size);
+	// Printing the time spent by parallel Gauss algorithm
+	printf("\n Time of execution: %f\n", duration);
+	// Program termination
+	ProcessTermination(pMatrix, pVector, pResult);
+	return 0;
+}
